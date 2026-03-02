@@ -108,7 +108,7 @@
 
             // Fetch the API Key from the input box
             const apiKey = document.getElementById("api-key").value;
-            const model = "gemini-2.0-flash-lite";
+            const model = "gemma-3-27b-it";
             const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
 
             // Compile the chat history into a single prompt string
