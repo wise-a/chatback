@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ChatBack</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            line-height: 1.6;
+            margin: 0 auto;
+            max-width: 800px;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            height: 95vh;
+        }
+        h2 { text-align: center; }
+        #chat-container {
+            flex-grow: 1;
+            border: 1px solid #ccc;
+            padding: 15px;
+            overflow-y: auto;
+            margin-bottom: 20px;
+            border-radius: 5px;
+            background: #fafafa;
+        }
+        .message {
+            margin-bottom: 15px;
+            padding: 12px;
+            border-radius: 5px;
+            color: #000;
+        }
+        .ai1 { background-color: #e3f2fd; border-left: 5px solid #2196f3; }
+        .ai2 { background-color: #f3e5f5; border-left: 5px solid #9c27b0; }
+        .human { background-color: #e8f5e9; border-left: 5px solid #4caf50; }
+        .system { background-color: #fff3e0; font-style: italic; color: #555; }
+        
+        .controls {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+        .row {
+            display: flex;
+            gap: 10px;
+        }
+        input[type="text"], input[type="password"] {
+            flex-grow: 1;
+            padding: 10px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            font-size: 16px;
+        }
+        button {
+            padding: 10px 15px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 16px;
+            background-color: #333;
+            color: white;
+        }
+        button:hover { background-color: #555; }
+        #export-btn { background-color: #ff9800; }
+        #export-btn:hover { background-color: #e68a00; }
+        #stop-btn { background-color: #f44336; }
+    </style>
+</head>
+<body>
+
+    <h2>ChatBack</h2>
+    
+    <div id="chat-container"></div>
+
+    <div class="controls">
+        <div class="row">
+            <input type="password" id="api-key" placeholder="Enter Gemini API Key here (Required)">
+        </div>
+        <div class="row">
+            <input type="text" id="human-input" placeholder="Type a message to inject...">
+            <button onclick="injectHumanMessage()">Send Message</button>
+        </div>
+        <div class="row">
+            <button id="start-btn" onclick="startChat()">Start Chat</button>
+            <button id="stop-btn" onclick="stopChat()" disabled>Pause Chat</button>
+            <button id="export-btn" onclick="exportTranscript()">Export .txt File</button>
+        </div>
+    </div>
+
+    <script>
+        let isRunning = false;
+        let turnCounter = 1;
+        let transcript = [];
+        let contextHistory = []; 
+        let lastMessage = "Let's debate the ethical implications of artificial general intelligence. You go first.";
+
+        const chatContainer = document.getElementById("chat-container");
+        const startBtn = document.getElementById("start-btn");
+        const stopBtn = document.getElementById("stop-btn");
+
+        // 1. Core Recursive Loop using Google Gemini API
+        async function runAILoop() {
+            if (!isRunning) return;
+
+            const currentAI = (turnCounter % 2 !== 0) ? "AI #1" : "AI #2";
+            appendMessage("System", `${currentAI} is typing...`);
+
+            // Fetch the API Key from the input box
+            const apiKey = document.getElementById("api-key").value;
+            const model = "gemini-3.0-flash";
+            const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+
+            // Compile the chat history into a single prompt string
+            const transcriptText = contextHistory.map(m => `[${m.role}]: ${m.content}`).join("\n\n");
+            
+            // Give the model explicit instructions on how to behave
+            const prompt = `You are ${currentAI} in a debate with another AI, and occasionally a Human. Read the transcript below and generate your next reply. 
+            
+            RULES:
+            - Respond directly to the last message.
+            - Do not include your name tag (e.g., "[${currentAI}]:") in your output.
+            - Keep the conversation moving forward.
+            
+            Transcript so far:
+            ${transcriptText}
+            
+            Next response from [${currentAI}]:`;
+
+            try {
+                const response = await fetch(endpoint, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        contents: [{ parts: [{ text: prompt }] }]
+                    })
+                });
+
+                if (!response.ok) {
+                    throw new Error(`API Error: ${response.status} - ${response.statusText}`);
+                }
+
+                const data = await response.json();
+                
+                if (!isRunning) return; // Catch if user paused while waiting for the network
+
+                // Extract the text from the API response payload
+                let responseText = data.candidates[0].content.parts[0].text.trim();
+
+                // Clear the "typing..." indicator
+                chatContainer.removeChild(chatContainer.lastChild);
+
+                appendMessage(currentAI, responseText);
+                
+                // Update Context
+                contextHistory.push({ role: currentAI, content: responseText });
+                lastMessage = responseText;
+                turnCounter++;
+
+                // Wait 3 seconds to prevent hitting API rate limits, then loop
+                setTimeout(runAILoop, 3000); 
+
+            } catch (error) {
+                console.error(error);
+                chatContainer.removeChild(chatContainer.lastChild); // Remove typing indicator
+                appendMessage("System", `Connection failed: ${error.message}`);
+                stopChat();
+            }
+        }
+
+        // 2. UI & Injection Logic
+        function startChat() {
+            if (isRunning) return;
+            const apiKey = document.getElementById("api-key").value;
+            if (!apiKey) {
+                alert("Please enter your API key first.");
+                return;
+            }
+            isRunning = true;
+            startBtn.disabled = true;
+            stopBtn.disabled = false;
+            
+            if (transcript.length === 0) {
+                appendMessage("Human", lastMessage); // Kickoff prompt
+            }
+            
+            runAILoop();
+        }
+
+        function stopChat() {
+            isRunning = false;
+            startBtn.disabled = false;
+            stopBtn.disabled = true;
+            appendMessage("System", "Chat paused.");
+        }
+
+        function injectHumanMessage() {
+            const inputField = document.getElementById("human-input");
+            const text = inputField.value.trim();
+            if (!text) return;
+
+            // Pause the AI loop to handle the injection cleanly
+            isRunning = false; 
+            startBtn.disabled = false;
+            stopBtn.disabled = true;
+
+            appendMessage("Human", text);
+            contextHistory.push({ role: "Human", content: text });
+            lastMessage = text;
+            inputField.value = "";
+            
+            appendMessage("System", "Chat paused. Press 'Start Chat' to resume with the AI responding to your message.");
+        }
+
+        function appendMessage(speaker, text) {
+            const div = document.createElement("div");
+            
+            if (speaker === "AI #1") div.className = "message ai1";
+            else if (speaker === "AI #2") div.className = "message ai2";
+            else if (speaker === "System") div.className = "message system";
+            else div.className = "message human";
+
+            div.innerHTML = `<strong>[${speaker}]</strong><br>${text}`;
+            chatContainer.appendChild(div);
+            chatContainer.scrollTop = chatContainer.scrollHeight;
+
+            if (speaker !== "System") {
+                transcript.push(`[${speaker}]\n${text}\n\n----------------------------------------\n\n`);
+            }
+        }
+
+        // 3. Export Logic
+        function exportTranscript() {
+            if (transcript.length === 0) {
+                alert("No conversation to export yet.");
+                return;
+            }
+            const blob = new Blob(transcript, { type: "text/plain" });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement("a");
+            a.href = url;
+            a.download = "ai_recursive_chat.txt";
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        }
+    </script>
+</body>
+</html>
